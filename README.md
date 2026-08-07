@@ -56,6 +56,14 @@ train/test split and lagged signals to avoid lookahead bias and overfitting.
   knowable proxies for regime age
 
 ## How to Run
+
+**Option 1: One-Click Dashboard (Recommended)**
+Run the entire pipeline and visualize all results in a beautiful local web dashboard:
+1. `python3 -m venv venv && source venv/bin/activate` (On Windows: `python -m venv venv` and `.\venv\Scripts\activate`)
+2. `pip install -r requirements.txt`
+3. `python run_dashboard.py`
+
+**Option 2: Step-by-step CLI execution**
 1. `python3 -m venv venv && source venv/bin/activate`
 2. `pip install -r requirements.txt`
 3. Run scripts 1-10 above in order from the `src/` directory
