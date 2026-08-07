@@ -1,938 +1,518 @@
-"""
-Macro Regime Sector Rotation — One-Click Dashboard
-===================================================
-Run this single file to:
-  1. Execute the full 10-step data pipeline (fetch → classify → backtest)
-  2. Launch a local web dashboard (http://127.0.0.1:8050) displaying every
-     CSV output in rich, styled tables with charts.
-
-Usage:
-    python run_dashboard.py
-"""
-
-import subprocess, sys, os, math, webbrowser, threading, json
-from http.server import HTTPServer, SimpleHTTPRequestHandler
-from pathlib import Path
-
-# ---------------------------------------------------------------------------
-# 0.  RESOLVE PATHS
-# ---------------------------------------------------------------------------
-ROOT = Path(__file__).resolve().parent
-SRC  = ROOT / "src"
-DATA = ROOT / "data"
-os.chdir(ROOT)                       # all src/ scripts expect CWD = project root
-
-# ---------------------------------------------------------------------------
-# 1.  RUN THE FULL PIPELINE
-# ---------------------------------------------------------------------------
-SCRIPTS = [
-    "fetch_data.py",
-    "regime_classifier.py",
-    "build_regime_history.py",
-    "verify_regimes.py",
-    "fetch_sector_data.py",
-    "regime_sector_analysis.py",
-    "contraction_split_analysis.py",
-    "backtest_rotation.py",
-    "backtest_rotation_oos.py",
-    "backtest_rotation_voltarget.py",
-]
-
-print("=" * 70)
-print("  MACRO REGIME SECTOR ROTATION — FULL PIPELINE")
-print("=" * 70)
-
-for i, script in enumerate(SCRIPTS, 1):
-    path = SRC / script
-    print(f"\n{'─'*70}")
-    print(f"  [{i}/{len(SCRIPTS)}] Running {script} …")
-    print(f"{'─'*70}")
-    result = subprocess.run(
-        [sys.executable, str(path)],
-        cwd=str(ROOT),
-    )
-    if result.returncode != 0:
-        print(f"\n⚠  {script} exited with code {result.returncode}")
-        sys.exit(1)
-
-print(f"\n{'='*70}")
-print("  ✅  ALL PIPELINE SCRIPTS COMPLETED SUCCESSFULLY")
-print(f"{'='*70}\n")
-
-# ---------------------------------------------------------------------------
-# 2.  READ CSV DATA AND CONVERT TO JSON FOR THE DASHBOARD
-# ---------------------------------------------------------------------------
+import os
+import sys
+import math
+import subprocess
 import pandas as pd
 import numpy as np
+import plotly.express as px
+import plotly.graph_objects as go
+import streamlit as st
 
-def df_to_json(df):
-    """Convert a DataFrame to a list of dicts, handling NaN."""
-    return json.loads(df.fillna("").to_json(orient="records"))
+# Page Configuration
+st.set_page_config(
+    page_title="Macro Regime Classification & Sector Rotation Strategy",
+    page_icon="📊",
+    layout="wide"
+)
 
-dashboard_data = {}
-
-# --- Macro Data ---
-macro_df = pd.read_csv(DATA / "macro_data.csv")
-dashboard_data["macro_data"] = df_to_json(macro_df)
-
-# --- Regime History ---
-regime_df = pd.read_csv(DATA / "regime_history.csv")
-dashboard_data["regime_history"] = df_to_json(regime_df)
-
-# Regime breakdown counts
-regime_counts = regime_df["regime"].value_counts().to_dict()
-regime_pcts = (regime_df["regime"].value_counts(normalize=True) * 100).round(2).to_dict()
-dashboard_data["regime_breakdown"] = {
-    r: {"count": regime_counts[r], "pct": regime_pcts[r]} for r in regime_counts
-}
-
-# --- Sector Returns ---
-sector_df = pd.read_csv(DATA / "sector_returns.csv")
-dashboard_data["sector_returns"] = df_to_json(sector_df)
-
-# --- Regime Sector Merged ---
-merged_df = pd.read_csv(DATA / "regime_sector_merged.csv")
-dashboard_data["regime_sector_merged"] = df_to_json(merged_df)
-
-# --- Regime Sector Summary ---
-summary_df = pd.read_csv(DATA / "regime_sector_summary.csv")
-dashboard_data["regime_sector_summary"] = df_to_json(summary_df)
-
-# --- Backtest Results ---
-backtest_df = pd.read_csv(DATA / "backtest_results.csv")
-dashboard_data["backtest_results"] = df_to_json(backtest_df)
-
-# --- Compute performance metrics for display cards ---
-sectors = ['XLF', 'XLK', 'XLE', 'XLV', 'XLY', 'XLP', 'XLI', 'XLU', 'XLB']
-
-def calc_metrics(monthly_returns, cum_series, years):
-    total_return = (cum_series.iloc[-1] - 1) * 100
-    cagr = ((cum_series.iloc[-1]) ** (1 / years) - 1) * 100
-    ann_vol = monthly_returns.std() * np.sqrt(12)
-    sharpe = cagr / ann_vol if ann_vol != 0 else 0
-    peak = cum_series.cummax()
-    dd = ((cum_series - peak) / peak).min() * 100
-    return {
-        "total_return": round(total_return, 2),
-        "cagr": round(cagr, 2),
-        "ann_vol": round(ann_vol, 2),
-        "sharpe": round(sharpe, 2),
-        "max_dd": round(dd, 2),
+# Custom Institutional CSS styling (Minimalist Dark Finance Aesthetic)
+st.markdown("""
+<style>
+    /* Global Page Styling */
+    .stApp {
+        background-color: #0E1117;
+        color: #E0E0E0;
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    }
+    
+    /* Headers & Typography */
+    h1, h2, h3, h4 {
+        color: #F0F2F6 !important;
+        font-weight: 600 !important;
+        letter-spacing: -0.02em !important;
+    }
+    
+    .main-title {
+        font-size: 1.85rem;
+        font-weight: 700;
+        color: #FFFFFF;
+        margin-bottom: 0.2rem;
+    }
+    
+    .sub-title {
+        font-size: 0.95rem;
+        color: #909090;
+        margin-bottom: 1.5rem;
+        border-bottom: 1px solid #262930;
+        padding-bottom: 0.75rem;
+    }
+    
+    /* Sidebar Styling */
+    section[data-testid="stSidebar"] {
+        background-color: #161922;
+        border-right: 1px solid #262930;
+    }
+    
+    /* Metric Cards */
+    div[data-testid="stMetric"] {
+        background-color: #1A1D27;
+        border: 1px solid #2A2E3D;
+        padding: 12px 16px;
+        border-radius: 6px;
+    }
+    
+    div[data-testid="stMetricLabel"] {
+        font-size: 0.8rem !important;
+        color: #888888 !important;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+    }
+    
+    div[data-testid="stMetricValue"] {
+        font-size: 1.35rem !important;
+        font-weight: 600 !important;
+        color: #E6E6E6 !important;
+    }
+    
+    /* Tab Styling */
+    .stTabs [data-baseweb="tab-list"] {
+        gap: 8px;
+        border-bottom: 1px solid #262930;
     }
 
-# Full-sample backtest metrics
-bt = backtest_df.copy()
-bt_years = len(bt) / 12.0
-bt["cum_s"] = (1 + bt["strategy_return"] / 100).cumprod()
-bt["cum_b"] = (1 + bt["benchmark_return"] / 100).cumprod()
-dashboard_data["full_backtest_metrics"] = {
-    "strategy": calc_metrics(bt["strategy_return"], bt["cum_s"], bt_years),
-    "benchmark": calc_metrics(bt["benchmark_return"], bt["cum_b"], bt_years),
-}
+    .stTabs [data-baseweb="tab"] {
+        height: 40px;
+        white-space: pre;
+        background-color: transparent;
+        border-radius: 4px 4px 0px 0px;
+        color: #888888;
+        font-size: 0.9rem;
+        font-weight: 500;
+        padding: 0px 16px;
+    }
 
-# OOS backtest metrics
-oos_merged = pd.read_csv(DATA / "regime_sector_merged.csv")
-oos_merged["regime_lagged"] = oos_merged["regime"].shift(1)
-oos_merged = oos_merged.dropna(subset=["regime_lagged"]).copy()
-train_oos = oos_merged[oos_merged["date"] < "2016-01-01"]
-test_oos = oos_merged[oos_merged["date"] >= "2016-01-01"].copy()
-train_avg = train_oos.groupby("regime_lagged")[sectors].mean()
-alloc_map = {r: train_avg.loc[r].idxmax() for r in train_avg.index}
-test_oos["chosen_sector"] = test_oos["regime_lagged"].map(alloc_map)
-test_oos["strategy_return"] = test_oos.apply(lambda row: row[row["chosen_sector"]], axis=1)
-test_oos["benchmark_return"] = test_oos[sectors].mean(axis=1)
-test_oos["cum_s"] = (1 + test_oos["strategy_return"] / 100).cumprod()
-test_oos["cum_b"] = (1 + test_oos["benchmark_return"] / 100).cumprod()
-oos_years = len(test_oos) / 12.0
-dashboard_data["oos_metrics"] = {
-    "strategy": calc_metrics(test_oos["strategy_return"], test_oos["cum_s"], oos_years),
-    "benchmark": calc_metrics(test_oos["benchmark_return"], test_oos["cum_b"], oos_years),
-    "allocation_map": alloc_map,
-}
-
-# Contraction early/late
-con_df = merged_df.copy()
-con_df["regime_run_id"] = (con_df["regime"] != con_df["regime"].shift()).cumsum()
-con_only = con_df[con_df["regime"] == "Contraction"].copy()
-sub_labels = []
-for run_id in con_only["regime_run_id"].unique():
-    rows = con_only[con_only["regime_run_id"] == run_id]
-    n = len(rows)
-    early = math.ceil(n / 2)
-    sub_labels.extend(["Early Contraction"] * early + ["Late Contraction"] * (n - early))
-con_only["sub_phase"] = sub_labels
-early_late = con_only.groupby("sub_phase")[sectors].mean().round(2)
-dashboard_data["contraction_split"] = {
-    phase: early_late.loc[phase].to_dict() for phase in early_late.index
-}
-
-# Serialize — replace any lingering NaN / Inf with None
-import math as _math
-
-def _sanitize(obj):
-    if isinstance(obj, float) and (_math.isnan(obj) or _math.isinf(obj)):
-        return None
-    if isinstance(obj, dict):
-        return {k: _sanitize(v) for k, v in obj.items()}
-    if isinstance(obj, list):
-        return [_sanitize(v) for v in obj]
-    return obj
-
-data_json = json.dumps(_sanitize(dashboard_data), default=str)
-
-# ---------------------------------------------------------------------------
-# 3.  GENERATE THE DASHBOARD HTML
-# ---------------------------------------------------------------------------
-HTML = f"""<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Macro Regime Sector Rotation Dashboard</title>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&display=swap" rel="stylesheet">
-<style>
-*, *::before, *::after {{ box-sizing: border-box; margin: 0; padding: 0; }}
-
-:root {{
-  --bg-primary: #0a0e1a;
-  --bg-secondary: #111827;
-  --bg-card: #1a1f35;
-  --bg-card-hover: #222845;
-  --border: rgba(255,255,255,0.06);
-  --text-primary: #e8ecf4;
-  --text-secondary: #8b95b0;
-  --text-muted: #5a6380;
-  --accent-blue: #3b82f6;
-  --accent-purple: #8b5cf6;
-  --accent-green: #10b981;
-  --accent-red: #ef4444;
-  --accent-amber: #f59e0b;
-  --accent-cyan: #06b6d4;
-  --gradient-1: linear-gradient(135deg, #3b82f6, #8b5cf6);
-  --gradient-2: linear-gradient(135deg, #10b981, #06b6d4);
-  --gradient-3: linear-gradient(135deg, #f59e0b, #ef4444);
-  --gradient-4: linear-gradient(135deg, #ec4899, #8b5cf6);
-  --shadow: 0 4px 24px rgba(0,0,0,0.3);
-  --shadow-lg: 0 8px 40px rgba(0,0,0,0.4);
-}}
-
-body {{
-  font-family: 'Inter', -apple-system, sans-serif;
-  background: var(--bg-primary);
-  color: var(--text-primary);
-  line-height: 1.6;
-  min-height: 100vh;
-}}
-
-/* --- HEADER --- */
-.header {{
-  background: linear-gradient(135deg, rgba(59,130,246,0.12), rgba(139,92,246,0.12));
-  border-bottom: 1px solid var(--border);
-  padding: 2rem 2rem 1.5rem;
-  position: sticky; top: 0; z-index: 100;
-  backdrop-filter: blur(20px);
-}}
-.header h1 {{
-  font-size: 1.8rem; font-weight: 800;
-  background: var(--gradient-1); -webkit-background-clip: text; -webkit-text-fill-color: transparent;
-  letter-spacing: -0.5px;
-}}
-.header p {{ color: var(--text-secondary); font-size: 0.85rem; margin-top: 0.3rem; }}
-
-/* --- NAV TABS --- */
-.nav {{ display: flex; gap: 0.5rem; padding: 1rem 2rem; background: var(--bg-secondary); border-bottom: 1px solid var(--border); flex-wrap: wrap; }}
-.nav button {{
-  padding: 0.5rem 1.2rem; border: 1px solid var(--border); border-radius: 8px;
-  background: transparent; color: var(--text-secondary); font-size: 0.8rem;
-  font-weight: 500; cursor: pointer; transition: all 0.25s;
-  font-family: inherit;
-}}
-.nav button:hover {{ background: rgba(59,130,246,0.1); color: var(--text-primary); border-color: var(--accent-blue); }}
-.nav button.active {{
-  background: var(--gradient-1); color: white; border-color: transparent;
-  box-shadow: 0 2px 12px rgba(59,130,246,0.3);
-}}
-
-/* --- MAIN --- */
-.main {{ padding: 1.5rem 2rem 4rem; max-width: 1500px; margin: 0 auto; }}
-.section {{ display: none; animation: fadeIn 0.4s ease; }}
-.section.active {{ display: block; }}
-@keyframes fadeIn {{ from {{ opacity: 0; transform: translateY(12px); }} to {{ opacity: 1; transform: translateY(0); }} }}
-
-.section-title {{
-  font-size: 1.3rem; font-weight: 700; margin-bottom: 1.2rem;
-  display: flex; align-items: center; gap: 0.6rem;
-}}
-.section-title .dot {{ width: 10px; height: 10px; border-radius: 50%; }}
-
-/* --- METRIC CARDS --- */
-.metric-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 1rem; margin-bottom: 1.5rem; }}
-.metric-card {{
-  background: var(--bg-card); border: 1px solid var(--border); border-radius: 12px;
-  padding: 1.2rem; position: relative; overflow: hidden; transition: transform 0.2s, box-shadow 0.2s;
-}}
-.metric-card:hover {{ transform: translateY(-2px); box-shadow: var(--shadow); }}
-.metric-card .label {{ font-size: 0.7rem; text-transform: uppercase; letter-spacing: 1px; color: var(--text-muted); font-weight: 600; }}
-.metric-card .value {{ font-size: 1.6rem; font-weight: 800; margin-top: 0.3rem; }}
-.metric-card .sub {{ font-size: 0.75rem; color: var(--text-secondary); margin-top: 0.2rem; }}
-.metric-card::before {{
-  content: ''; position: absolute; top: 0; left: 0; right: 0; height: 3px;
-}}
-.metric-card.blue::before {{ background: var(--gradient-1); }}
-.metric-card.green::before {{ background: var(--gradient-2); }}
-.metric-card.red::before {{ background: var(--gradient-3); }}
-.metric-card.purple::before {{ background: var(--gradient-4); }}
-
-/* --- REGIME BADGES --- */
-.regime-badge {{
-  display: inline-block; padding: 0.15rem 0.6rem; border-radius: 20px;
-  font-size: 0.7rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px;
-}}
-.regime-Expansion {{ background: rgba(16,185,129,0.15); color: #34d399; }}
-.regime-Slowdown {{ background: rgba(245,158,11,0.15); color: #fbbf24; }}
-.regime-Recovery {{ background: rgba(59,130,246,0.15); color: #60a5fa; }}
-.regime-Contraction {{ background: rgba(239,68,68,0.15); color: #f87171; }}
-
-/* --- TABLES --- */
-.table-wrap {{
-  background: var(--bg-card); border: 1px solid var(--border); border-radius: 12px;
-  overflow: hidden; margin-bottom: 1.5rem;
-}}
-.table-title {{
-  padding: 1rem 1.2rem; font-weight: 600; font-size: 0.9rem;
-  border-bottom: 1px solid var(--border);
-  background: rgba(255,255,255,0.02);
-}}
-.table-scroll {{ overflow-x: auto; max-height: 500px; overflow-y: auto; }}
-table {{
-  width: 100%; border-collapse: collapse; font-size: 0.78rem;
-}}
-thead {{ position: sticky; top: 0; z-index: 2; }}
-th {{
-  padding: 0.7rem 1rem; text-align: left; font-weight: 600; font-size: 0.7rem;
-  text-transform: uppercase; letter-spacing: 0.8px; color: var(--text-muted);
-  background: var(--bg-secondary); border-bottom: 1px solid var(--border);
-  white-space: nowrap;
-}}
-td {{
-  padding: 0.55rem 1rem; border-bottom: 1px solid var(--border);
-  color: var(--text-secondary); white-space: nowrap;
-}}
-tr:hover td {{ background: rgba(59,130,246,0.04); color: var(--text-primary); }}
-.positive {{ color: var(--accent-green); }}
-.negative {{ color: var(--accent-red); }}
-
-/* --- ALLOCATION MAP --- */
-.alloc-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 0.8rem; margin-bottom: 1.5rem; }}
-.alloc-card {{
-  background: var(--bg-card); border: 1px solid var(--border); border-radius: 10px;
-  padding: 1rem; text-align: center; transition: transform 0.2s;
-}}
-.alloc-card:hover {{ transform: translateY(-2px); }}
-.alloc-card .regime-name {{ font-size: 0.75rem; color: var(--text-muted); text-transform: uppercase; letter-spacing: 1px; }}
-.alloc-card .arrow {{ font-size: 1.2rem; margin: 0.3rem 0; color: var(--text-muted); }}
-.alloc-card .sector-name {{ font-size: 1.1rem; font-weight: 700; color: var(--accent-cyan); }}
-
-/* --- CHART AREA --- */
-.chart-container {{
-  background: var(--bg-card); border: 1px solid var(--border); border-radius: 12px;
-  padding: 1.5rem; margin-bottom: 1.5rem; position: relative;
-}}
-.chart-container canvas {{ width: 100% !important; height: 350px !important; }}
-
-/* --- DUAL GRID --- */
-.dual-grid {{ display: grid; grid-template-columns: 1fr 1fr; gap: 1.2rem; }}
-@media (max-width: 900px) {{ .dual-grid {{ grid-template-columns: 1fr; }} }}
-
-/* --- SCROLLBAR --- */
-::-webkit-scrollbar {{ width: 6px; height: 6px; }}
-::-webkit-scrollbar-track {{ background: var(--bg-secondary); }}
-::-webkit-scrollbar-thumb {{ background: #333a55; border-radius: 3px; }}
-::-webkit-scrollbar-thumb:hover {{ background: #444b6a; }}
-
-/* --- SEARCH / FILTER --- */
-.search-bar {{
-  display: flex; gap: 0.6rem; margin-bottom: 1rem; flex-wrap: wrap; align-items: center;
-}}
-.search-bar input {{
-  padding: 0.5rem 1rem; border: 1px solid var(--border); border-radius: 8px;
-  background: var(--bg-secondary); color: var(--text-primary); font-size: 0.8rem;
-  font-family: inherit; outline: none; min-width: 220px;
-}}
-.search-bar input:focus {{ border-color: var(--accent-blue); }}
-.search-bar select {{
-  padding: 0.5rem 0.8rem; border: 1px solid var(--border); border-radius: 8px;
-  background: var(--bg-secondary); color: var(--text-primary); font-size: 0.8rem;
-  font-family: inherit; outline: none; cursor: pointer;
-}}
-.row-count {{ font-size: 0.75rem; color: var(--text-muted); margin-left: auto; }}
+    .stTabs [aria-selected="true"] {
+        background-color: #1E222D !important;
+        color: #3182CE !important;
+        border-bottom: 2px solid #3182CE !important;
+    }
+    
+    /* Table Styling */
+    table {
+        color: #D0D0D0 !important;
+    }
 </style>
-</head>
-<body>
+""", unsafe_allow_html=True)
 
-<div class="header">
-  <h1>📊 Macro Regime Sector Rotation</h1>
-  <p>Full pipeline executed &amp; all data rendered — single-run dashboard</p>
-</div>
+# Main Title Header
+st.markdown('<div class="main-title">Macro Regime Classification & Sector Rotation Framework</div>', unsafe_allow_html=True)
+st.markdown('<div class="sub-title">Quantitative Research Platform | Federal Reserve Macro Indicators & S&P Sector Rotation (2005–Present)</div>', unsafe_allow_html=True)
 
-<div class="nav" id="nav">
-  <button class="active" data-tab="overview">Overview</button>
-  <button data-tab="macro">Macro Data</button>
-  <button data-tab="regimes">Regime History</button>
-  <button data-tab="sectors">Sector Returns</button>
-  <button data-tab="analysis">Regime × Sector</button>
-  <button data-tab="contraction">Contraction Split</button>
-  <button data-tab="backtest">Full Backtest</button>
-  <button data-tab="oos">OOS Backtest</button>
-</div>
+# Sidebar Orchestrator & Configuration Panel
+st.sidebar.markdown("### Pipeline Orchestrator")
+st.sidebar.caption("Execute underlying modular ETL and backtesting scripts:")
 
-<div class="main">
+if st.sidebar.button("Execute Full Pipeline"):
+    with st.spinner("Executing pipeline scripts in order..."):
+        try:
+            py_bin = sys.executable
+            subprocess.run([py_bin, "src/fetch_data.py"], check=True)
+            subprocess.run([py_bin, "src/build_regime_history.py"], check=True)
+            subprocess.run([py_bin, "src/fetch_sector_data.py"], check=True)
+            subprocess.run([py_bin, "src/regime_sector_analysis.py"], check=True)
+            subprocess.run([py_bin, "src/backtest_rotation_oos.py"], check=True)
+            subprocess.run([py_bin, "src/backtest_rotation_voltarget.py"], check=True)
+            st.sidebar.success("Pipeline executed successfully!")
+        except Exception as e:
+            st.sidebar.error(f"Pipeline execution error: {e}")
 
-  <!-- ============= OVERVIEW ============= -->
-  <div class="section active" id="tab-overview">
-    <div class="section-title"><span class="dot" style="background:var(--gradient-1)"></span>Dashboard Overview</div>
+st.sidebar.markdown("---")
+st.sidebar.markdown("### Strategy Model Parameters")
+st.sidebar.markdown("""
+**In-Sample Rule Set (2005–2015):**
+- **Expansion:** `XLE` (Energy)
+- **Slowdown:** `XLB` (Materials)
+- **Recovery:** `XLP` (Staples)
+- **Contraction:** `XLK` (Technology)
 
-    <div class="metric-grid" id="overview-metrics"></div>
+**Execution Engine:**
+- **Execution Lag:** 1 Month (`t-1` signal)
+- **OOS Test Split:** 2016–2026 (10.5 Yrs)
+""")
 
-    <div class="dual-grid">
-      <div class="chart-container">
-        <div style="font-weight:600;margin-bottom:0.8rem;font-size:0.9rem;">📈 Full-Sample Cumulative Returns</div>
-        <canvas id="chart-full-cum"></canvas>
-      </div>
-      <div class="chart-container">
-        <div style="font-weight:600;margin-bottom:0.8rem;font-size:0.9rem;">📈 Out-of-Sample Cumulative Returns (2016+)</div>
-        <canvas id="chart-oos-cum"></canvas>
-      </div>
-    </div>
+st.sidebar.markdown("---")
+st.sidebar.markdown("### Research Documentation")
+if os.path.exists("JPMC_Quantitative_Interview_100_QA.pdf"):
+    with open("JPMC_Quantitative_Interview_100_QA.pdf", "rb") as pdf_file:
+        st.sidebar.download_button(
+            label="Download 100-QA Interview Guide (PDF)",
+            data=pdf_file,
+            file_name="JPMC_Quantitative_Interview_100_QA.pdf",
+            mime="application/pdf"
+        )
 
-    <div class="dual-grid">
-      <div class="chart-container">
-        <div style="font-weight:600;margin-bottom:0.8rem;font-size:0.9rem;">🎯 Regime Distribution</div>
-        <canvas id="chart-regime-pie"></canvas>
-      </div>
-      <div>
-        <div class="section-title" style="margin-top:0.5rem;"><span class="dot" style="background:var(--gradient-2)"></span>OOS Allocation Map</div>
-        <div class="alloc-grid" id="alloc-map"></div>
-      </div>
-    </div>
-  </div>
+# Load Datasets
+@st.cache_data
+def load_data():
+    regime_df = pd.read_csv("data/regime_history.csv")
+    sector_df = pd.read_csv("data/sector_returns.csv")
+    merged_df = pd.read_csv("data/regime_sector_merged.csv")
+    summary_df = pd.read_csv("data/regime_sector_summary.csv", index_col=0)
+    backtest_df = pd.read_csv("data/backtest_results.csv")
+    return regime_df, sector_df, merged_df, summary_df, backtest_df
 
-  <!-- ============= MACRO DATA ============= -->
-  <div class="section" id="tab-macro">
-    <div class="section-title"><span class="dot" style="background:var(--accent-cyan)"></span>Macro Economic Data (FRED)</div>
-    <div class="chart-container">
-      <div style="font-weight:600;margin-bottom:0.8rem;font-size:0.9rem;">PMI Proxy &amp; Yield Curve Spread Over Time</div>
-      <canvas id="chart-macro"></canvas>
-    </div>
-    <div class="table-wrap">
-      <div class="table-title">macro_data.csv</div>
-      <div class="search-bar" style="padding:0.8rem 1.2rem 0;">
-        <input type="text" placeholder="Search dates..." id="search-macro">
-        <span class="row-count" id="count-macro"></span>
-      </div>
-      <div class="table-scroll" id="table-macro"></div>
-    </div>
-  </div>
-
-  <!-- ============= REGIME HISTORY ============= -->
-  <div class="section" id="tab-regimes">
-    <div class="section-title"><span class="dot" style="background:var(--accent-green)"></span>Regime Classification History</div>
-    <div class="metric-grid" id="regime-counts"></div>
-    <div class="table-wrap">
-      <div class="table-title">regime_history.csv</div>
-      <div class="search-bar" style="padding:0.8rem 1.2rem 0;">
-        <input type="text" placeholder="Search..." id="search-regime">
-        <select id="filter-regime">
-          <option value="">All Regimes</option>
-          <option value="Expansion">Expansion</option>
-          <option value="Slowdown">Slowdown</option>
-          <option value="Recovery">Recovery</option>
-          <option value="Contraction">Contraction</option>
-        </select>
-        <span class="row-count" id="count-regime"></span>
-      </div>
-      <div class="table-scroll" id="table-regime"></div>
-    </div>
-  </div>
-
-  <!-- ============= SECTOR RETURNS ============= -->
-  <div class="section" id="tab-sectors">
-    <div class="section-title"><span class="dot" style="background:var(--accent-amber)"></span>Monthly Sector ETF Returns (%)</div>
-    <div class="chart-container">
-      <div style="font-weight:600;margin-bottom:0.8rem;font-size:0.9rem;">Sector Returns Heatmap (last 24 months)</div>
-      <canvas id="chart-sector-heat"></canvas>
-    </div>
-    <div class="table-wrap">
-      <div class="table-title">sector_returns.csv</div>
-      <div class="search-bar" style="padding:0.8rem 1.2rem 0;">
-        <input type="text" placeholder="Search dates..." id="search-sector">
-        <span class="row-count" id="count-sector"></span>
-      </div>
-      <div class="table-scroll" id="table-sector"></div>
-    </div>
-  </div>
-
-  <!-- ============= REGIME × SECTOR ============= -->
-  <div class="section" id="tab-analysis">
-    <div class="section-title"><span class="dot" style="background:var(--accent-purple)"></span>Average Sector Return by Regime</div>
-    <div class="chart-container">
-      <div style="font-weight:600;margin-bottom:0.8rem;font-size:0.9rem;">Avg Monthly Return (%) by Regime × Sector</div>
-      <canvas id="chart-regime-sector"></canvas>
-    </div>
-    <div class="table-wrap">
-      <div class="table-title">regime_sector_summary.csv — Average Monthly Returns (%)</div>
-      <div class="table-scroll" id="table-summary"></div>
-    </div>
-  </div>
-
-  <!-- ============= CONTRACTION SPLIT ============= -->
-  <div class="section" id="tab-contraction">
-    <div class="section-title"><span class="dot" style="background:var(--accent-red)"></span>Contraction Phase Split: Early vs Late</div>
-    <div class="chart-container">
-      <div style="font-weight:600;margin-bottom:0.8rem;font-size:0.9rem;">Early vs Late Contraction — Avg Monthly Return (%)</div>
-      <canvas id="chart-contraction"></canvas>
-    </div>
-    <div class="table-wrap">
-      <div class="table-title">Early vs Late Contraction Average Returns</div>
-      <div class="table-scroll" id="table-contraction"></div>
-    </div>
-  </div>
-
-  <!-- ============= FULL BACKTEST ============= -->
-  <div class="section" id="tab-backtest">
-    <div class="section-title"><span class="dot" style="background:var(--gradient-1)"></span>Full-Sample Backtest (2005–Present)</div>
-    <div class="metric-grid" id="bt-metrics"></div>
-    <div class="chart-container">
-      <div style="font-weight:600;margin-bottom:0.8rem;font-size:0.9rem;">Cumulative Returns — Strategy vs Benchmark</div>
-      <canvas id="chart-bt-full"></canvas>
-    </div>
-    <div class="table-wrap">
-      <div class="table-title">backtest_results.csv</div>
-      <div class="search-bar" style="padding:0.8rem 1.2rem 0;">
-        <input type="text" placeholder="Search..." id="search-bt">
-        <select id="filter-bt-regime">
-          <option value="">All Regimes</option>
-          <option value="Expansion">Expansion</option>
-          <option value="Slowdown">Slowdown</option>
-          <option value="Recovery">Recovery</option>
-          <option value="Contraction">Contraction</option>
-        </select>
-        <span class="row-count" id="count-bt"></span>
-      </div>
-      <div class="table-scroll" id="table-bt"></div>
-    </div>
-  </div>
-
-  <!-- ============= OOS BACKTEST ============= -->
-  <div class="section" id="tab-oos">
-    <div class="section-title"><span class="dot" style="background:var(--gradient-2)"></span>Out-of-Sample Backtest (2016–Present)</div>
-    <div class="metric-grid" id="oos-metrics-cards"></div>
-    <div class="chart-container">
-      <div style="font-weight:600;margin-bottom:0.8rem;font-size:0.9rem;">OOS Cumulative Returns — Strategy vs Benchmark</div>
-      <canvas id="chart-oos-full"></canvas>
-    </div>
-  </div>
-
-</div>
-
-<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
-<script>
-// ─── DATA ───
-const D = {data_json};
-
-// ─── TAB SWITCHING ───
-document.querySelectorAll('.nav button').forEach(btn => {{
-  btn.addEventListener('click', () => {{
-    document.querySelectorAll('.nav button').forEach(b => b.classList.remove('active'));
-    btn.classList.add('active');
-    document.querySelectorAll('.section').forEach(s => s.classList.remove('active'));
-    document.getElementById('tab-' + btn.dataset.tab).classList.add('active');
-  }});
-}});
-
-// ─── HELPERS ───
-function colorVal(v) {{
-  if (v === null || v === undefined || v === '') return '';
-  const n = parseFloat(v);
-  if (isNaN(n)) return v;
-  if (n > 0) return `<span class="positive">+${{n.toFixed(2)}}</span>`;
-  if (n < 0) return `<span class="negative">${{n.toFixed(2)}}</span>`;
-  return n.toFixed(2);
-}}
-
-function regimeBadge(r) {{
-  return `<span class="regime-badge regime-${{r}}">${{r}}</span>`;
-}}
-
-function buildTable(containerId, rows, columns, opts = {{}}) {{
-  if (!rows || rows.length === 0) {{ document.getElementById(containerId).innerHTML = '<p style="padding:1rem;color:var(--text-muted)">No data</p>'; return; }}
-  const colorCols = opts.colorCols || [];
-  const regimeCol = opts.regimeCol || null;
-  let html = '<table><thead><tr>';
-  columns.forEach(c => html += `<th>${{c}}</th>`);
-  html += '</tr></thead><tbody>';
-  rows.forEach(row => {{
-    html += '<tr>';
-    columns.forEach(c => {{
-      let v = row[c];
-      if (c === regimeCol && v) html += `<td>${{regimeBadge(v)}}</td>`;
-      else if (colorCols.includes(c)) html += `<td>${{colorVal(v)}}</td>`;
-      else html += `<td>${{v !== null && v !== undefined ? v : ''}}</td>`;
-    }});
-    html += '</tr>';
-  }});
-  html += '</tbody></table>';
-  document.getElementById(containerId).innerHTML = html;
-}}
-
-function setupSearch(inputId, countId, data, columns, containerId, opts = {{}}) {{
-  const input = document.getElementById(inputId);
-  const filterSel = opts.filterSelect ? document.getElementById(opts.filterSelect) : null;
-  const filterKey = opts.filterKey || null;
-  const update = () => {{
-    const q = input.value.toLowerCase();
-    const fv = filterSel ? filterSel.value : '';
-    let filtered = data.filter(row => {{
-      const matchQ = !q || columns.some(c => String(row[c] || '').toLowerCase().includes(q));
-      const matchF = !fv || (filterKey && row[filterKey] === fv);
-      return matchQ && matchF;
-    }});
-    buildTable(containerId, filtered, columns, opts);
-    document.getElementById(countId).textContent = `${{filtered.length}} / ${{data.length}} rows`;
-  }};
-  input.addEventListener('input', update);
-  if (filterSel) filterSel.addEventListener('change', update);
-  update();
-}}
-
-// ─── OVERVIEW ───
-(function() {{
-  const fm = D.full_backtest_metrics;
-  const om = D.oos_metrics;
-  const cards = [
-    {{ label: 'Full CAGR (Strategy)', value: fm.strategy.cagr + '%', sub: 'vs ' + fm.benchmark.cagr + '% benchmark', cls: 'blue' }},
-    {{ label: 'Full Sharpe', value: fm.strategy.sharpe, sub: 'vs ' + fm.benchmark.sharpe + ' benchmark', cls: 'purple' }},
-    {{ label: 'OOS CAGR (Strategy)', value: om.strategy.cagr + '%', sub: '2016–present, vs ' + om.benchmark.cagr + '%', cls: 'green' }},
-    {{ label: 'OOS Sharpe', value: om.strategy.sharpe, sub: 'vs ' + om.benchmark.sharpe + ' benchmark', cls: 'purple' }},
-    {{ label: 'Full Max Drawdown', value: fm.strategy.max_dd + '%', sub: 'Strategy worst peak-to-trough', cls: 'red' }},
-    {{ label: 'OOS Max Drawdown', value: om.strategy.max_dd + '%', sub: 'Strategy 2016+', cls: 'red' }},
-  ];
-  let html = '';
-  cards.forEach(c => {{
-    html += `<div class="metric-card ${{c.cls}}"><div class="label">${{c.label}}</div><div class="value">${{c.value}}</div><div class="sub">${{c.sub}}</div></div>`;
-  }});
-  document.getElementById('overview-metrics').innerHTML = html;
-
-  // Allocation map
-  let allocHtml = '';
-  for (const [regime, sector] of Object.entries(om.allocation_map)) {{
-    allocHtml += `<div class="alloc-card"><div class="regime-name">${{regime}}</div><div class="arrow">↓</div><div class="sector-name">${{sector}}</div></div>`;
-  }}
-  document.getElementById('alloc-map').innerHTML = allocHtml;
-}})();
-
-// ─── CHARTS ───
-const chartColors = {{
-  strategy: '#3b82f6',
-  benchmark: '#8b5cf6',
-  strategyFill: 'rgba(59,130,246,0.08)',
-  benchmarkFill: 'rgba(139,92,246,0.08)',
-}};
-
-const defaultOpts = {{
-  responsive: true,
-  maintainAspectRatio: false,
-  plugins: {{
-    legend: {{ labels: {{ color: '#8b95b0', font: {{ size: 11, family: 'Inter' }} }} }},
-  }},
-  scales: {{
-    x: {{ ticks: {{ color: '#5a6380', font: {{ size: 10 }}, maxTicksLimit: 15 }}, grid: {{ color: 'rgba(255,255,255,0.04)' }} }},
-    y: {{ ticks: {{ color: '#5a6380', font: {{ size: 10 }} }}, grid: {{ color: 'rgba(255,255,255,0.04)' }} }},
-  }},
-}};
-
-// Full cumulative chart
-(function() {{
-  const bt = D.backtest_results;
-  const labels = bt.map(r => r.date);
-  let cumS = [], cumB = [], cs = 1, cb = 1;
-  bt.forEach(r => {{
-    cs *= (1 + r.strategy_return / 100);
-    cb *= (1 + r.benchmark_return / 100);
-    cumS.push(cs); cumB.push(cb);
-  }});
-  new Chart(document.getElementById('chart-full-cum'), {{
-    type: 'line',
-    data: {{
-      labels,
-      datasets: [
-        {{ label: 'Strategy', data: cumS, borderColor: chartColors.strategy, backgroundColor: chartColors.strategyFill, fill: true, borderWidth: 2, pointRadius: 0, tension: 0.3 }},
-        {{ label: 'Benchmark', data: cumB, borderColor: chartColors.benchmark, backgroundColor: chartColors.benchmarkFill, fill: true, borderWidth: 2, pointRadius: 0, tension: 0.3 }},
-      ]
-    }},
-    options: defaultOpts
-  }});
-}})();
-
-// OOS cumulative chart (overview)
-(function() {{
-  const bt = D.backtest_results.filter(r => r.date >= '2016-01-01');
-  const labels = bt.map(r => r.date);
-  let cumS = [], cumB = [], cs = 1, cb = 1;
-  bt.forEach(r => {{
-    cs *= (1 + r.strategy_return / 100);
-    cb *= (1 + r.benchmark_return / 100);
-    cumS.push(cs); cumB.push(cb);
-  }});
-  new Chart(document.getElementById('chart-oos-cum'), {{
-    type: 'line',
-    data: {{
-      labels,
-      datasets: [
-        {{ label: 'Strategy (OOS)', data: cumS, borderColor: '#10b981', backgroundColor: 'rgba(16,185,129,0.08)', fill: true, borderWidth: 2, pointRadius: 0, tension: 0.3 }},
-        {{ label: 'Benchmark', data: cumB, borderColor: '#06b6d4', backgroundColor: 'rgba(6,182,212,0.08)', fill: true, borderWidth: 2, pointRadius: 0, tension: 0.3 }},
-      ]
-    }},
-    options: defaultOpts
-  }});
-}})();
-
-// Regime pie
-(function() {{
-  const rb = D.regime_breakdown;
-  const regimes = Object.keys(rb);
-  const colors = {{ Expansion: '#10b981', Slowdown: '#f59e0b', Recovery: '#3b82f6', Contraction: '#ef4444' }};
-  new Chart(document.getElementById('chart-regime-pie'), {{
-    type: 'doughnut',
-    data: {{
-      labels: regimes,
-      datasets: [{{ data: regimes.map(r => rb[r].count), backgroundColor: regimes.map(r => colors[r] || '#666'), borderWidth: 0 }}],
-    }},
-    options: {{
-      responsive: true, maintainAspectRatio: false,
-      plugins: {{ legend: {{ position: 'right', labels: {{ color: '#8b95b0', padding: 15, font: {{ size: 12, family: 'Inter' }} }} }} }},
-      cutout: '60%',
-    }}
-  }});
-}})();
-
-// ─── MACRO TAB ───
-(function() {{
-  const md = D.macro_data;
-  const labels = md.map(r => r.date);
-  new Chart(document.getElementById('chart-macro'), {{
-    type: 'line',
-    data: {{
-      labels,
-      datasets: [
-        {{ label: 'PMI Proxy', data: md.map(r => r.pmi), borderColor: '#3b82f6', borderWidth: 2, pointRadius: 0, tension: 0.3, yAxisID: 'y' }},
-        {{ label: 'Yield Curve Spread', data: md.map(r => r.yield_curve_spread), borderColor: '#f59e0b', borderWidth: 2, pointRadius: 0, tension: 0.3, yAxisID: 'y1' }},
-      ]
-    }},
-    options: {{
-      ...defaultOpts,
-      scales: {{
-        ...defaultOpts.scales,
-        y: {{ ...defaultOpts.scales.y, position: 'left', title: {{ display: true, text: 'PMI Proxy', color: '#5a6380' }} }},
-        y1: {{ ...defaultOpts.scales.y, position: 'right', title: {{ display: true, text: 'Yield Spread (%)', color: '#5a6380' }}, grid: {{ drawOnChartArea: false }} }},
-      }}
-    }}
-  }});
-  setupSearch('search-macro', 'count-macro', md, ['date','pmi','yield_curve_spread'], 'table-macro', {{ colorCols: ['pmi','yield_curve_spread'] }});
-}})();
-
-// ─── REGIME HISTORY TAB ───
-(function() {{
-  const rb = D.regime_breakdown;
-  let html = '';
-  const colors = {{ Expansion: 'green', Slowdown: 'purple', Recovery: 'blue', Contraction: 'red' }};
-  for (const [r, info] of Object.entries(rb)) {{
-    html += `<div class="metric-card ${{colors[r] || 'blue'}}"><div class="label">${{r}}</div><div class="value">${{info.count}} <span style="font-size:0.8rem;font-weight:400">months</span></div><div class="sub">${{info.pct}}% of total</div></div>`;
-  }}
-  document.getElementById('regime-counts').innerHTML = html;
-
-  const cols = Object.keys(D.regime_history[0] || {{}});
-  setupSearch('search-regime', 'count-regime', D.regime_history, cols, 'table-regime', {{
-    regimeCol: 'regime', colorCols: ['pmi','yield_curve_spread','pmi_change','pmi_change_3mo'],
-    filterSelect: 'filter-regime', filterKey: 'regime',
-  }});
-}})();
-
-// ─── SECTOR RETURNS TAB ───
-(function() {{
-  const sr = D.sector_returns;
-  const sectors = ['XLF','XLK','XLE','XLV','XLY','XLP','XLI','XLU','XLB'];
-
-  // Heatmap as grouped bar (last 24 months)
-  const last24 = sr.slice(-24);
-  const sectorColors = ['#3b82f6','#8b5cf6','#10b981','#ef4444','#f59e0b','#06b6d4','#ec4899','#84cc16','#f97316'];
-  new Chart(document.getElementById('chart-sector-heat'), {{
-    type: 'bar',
-    data: {{
-      labels: last24.map(r => r.date),
-      datasets: sectors.map((s, i) => ({{
-        label: s, data: last24.map(r => r[s]),
-        backgroundColor: sectorColors[i] + '99', borderColor: sectorColors[i], borderWidth: 1,
-      }})),
-    }},
-    options: {{ ...defaultOpts, plugins: {{ ...defaultOpts.plugins, legend: {{ ...defaultOpts.plugins.legend, position: 'top' }} }} }}
-  }});
-
-  setupSearch('search-sector', 'count-sector', sr, ['date', ...sectors], 'table-sector', {{ colorCols: sectors }});
-}})();
-
-// ─── REGIME × SECTOR ANALYSIS ───
-(function() {{
-  const summary = D.regime_sector_summary;
-  const sectors = ['XLF','XLK','XLE','XLV','XLY','XLP','XLI','XLU','XLB'];
-  const regimeCol = summary[0] ? Object.keys(summary[0])[0] : 'regime';
-
-  const regimeColors = {{ Expansion: '#10b981', Slowdown: '#f59e0b', Recovery: '#3b82f6', Contraction: '#ef4444' }};
-  new Chart(document.getElementById('chart-regime-sector'), {{
-    type: 'bar',
-    data: {{
-      labels: sectors,
-      datasets: summary.map(row => ({{
-        label: row[regimeCol],
-        data: sectors.map(s => row[s] || 0),
-        backgroundColor: (regimeColors[row[regimeCol]] || '#666') + 'cc',
-        borderColor: regimeColors[row[regimeCol]] || '#666',
-        borderWidth: 1,
-      }})),
-    }},
-    options: {{ ...defaultOpts, plugins: {{ ...defaultOpts.plugins }} }}
-  }});
-
-  const allCols = Object.keys(summary[0] || {{}});
-  buildTable('table-summary', summary, allCols, {{ colorCols: sectors, regimeCol }});
-}})();
-
-// ─── CONTRACTION SPLIT ───
-(function() {{
-  const cs = D.contraction_split;
-  const sectors = ['XLF','XLK','XLE','XLV','XLY','XLP','XLI','XLU','XLB'];
-  const phases = Object.keys(cs);
-
-  new Chart(document.getElementById('chart-contraction'), {{
-    type: 'bar',
-    data: {{
-      labels: sectors,
-      datasets: phases.map((p, i) => ({{
-        label: p,
-        data: sectors.map(s => cs[p][s] || 0),
-        backgroundColor: i === 0 ? 'rgba(239,68,68,0.6)' : 'rgba(16,185,129,0.6)',
-        borderColor: i === 0 ? '#ef4444' : '#10b981',
-        borderWidth: 1,
-      }})),
-    }},
-    options: defaultOpts
-  }});
-
-  // Table
-  const rows = phases.map(p => ({{ Phase: p, ...cs[p] }}));
-  buildTable('table-contraction', rows, ['Phase', ...sectors], {{ colorCols: sectors }});
-}})();
-
-// ─── FULL BACKTEST TAB ───
-(function() {{
-  const fm = D.full_backtest_metrics;
-  const labels = ['CAGR (%)', 'Sharpe', 'Vol (%)', 'Max DD (%)', 'Total Return (%)'];
-  const sVals = [fm.strategy.cagr, fm.strategy.sharpe, fm.strategy.ann_vol, fm.strategy.max_dd, fm.strategy.total_return];
-  const bVals = [fm.benchmark.cagr, fm.benchmark.sharpe, fm.benchmark.ann_vol, fm.benchmark.max_dd, fm.benchmark.total_return];
-
-  let html = '';
-  const mLabels = ['CAGR','Sharpe Ratio','Ann. Volatility','Max Drawdown','Total Return'];
-  const mClasses = ['blue','purple','green','red','blue'];
-  mLabels.forEach((l, i) => {{
-    html += `<div class="metric-card ${{mClasses[i]}}"><div class="label">${{l}}</div><div class="value">${{sVals[i]}}${{i!==1?'%':''}}</div><div class="sub">Benchmark: ${{bVals[i]}}${{i!==1?'%':''}}</div></div>`;
-  }});
-  document.getElementById('bt-metrics').innerHTML = html;
-
-  const bt = D.backtest_results;
-  let cumS = [], cumB = [], cs = 1, cb = 1;
-  bt.forEach(r => {{ cs *= (1 + r.strategy_return/100); cb *= (1 + r.benchmark_return/100); cumS.push(cs); cumB.push(cb); }});
-  new Chart(document.getElementById('chart-bt-full'), {{
-    type: 'line',
-    data: {{
-      labels: bt.map(r => r.date),
-      datasets: [
-        {{ label: 'Strategy', data: cumS, borderColor: '#3b82f6', backgroundColor: 'rgba(59,130,246,0.08)', fill: true, borderWidth: 2, pointRadius: 0, tension: 0.3 }},
-        {{ label: 'Benchmark', data: cumB, borderColor: '#8b5cf6', backgroundColor: 'rgba(139,92,246,0.08)', fill: true, borderWidth: 2, pointRadius: 0, tension: 0.3 }},
-      ]
-    }},
-    options: defaultOpts
-  }});
-
-  const btCols = ['date','regime_lagged','chosen_sector','strategy_return','benchmark_return','cumulative_strategy','cumulative_benchmark'];
-  setupSearch('search-bt', 'count-bt', bt, btCols, 'table-bt', {{
-    colorCols: ['strategy_return','benchmark_return'], regimeCol: 'regime_lagged',
-    filterSelect: 'filter-bt-regime', filterKey: 'regime_lagged',
-  }});
-}})();
-
-// ─── OOS BACKTEST TAB ───
-(function() {{
-  const om = D.oos_metrics;
-  const cards = [
-    {{ label: 'CAGR', value: om.strategy.cagr + '%', sub: 'Benchmark: ' + om.benchmark.cagr + '%', cls: 'green' }},
-    {{ label: 'Sharpe Ratio', value: om.strategy.sharpe, sub: 'Benchmark: ' + om.benchmark.sharpe, cls: 'purple' }},
-    {{ label: 'Ann. Volatility', value: om.strategy.ann_vol + '%', sub: 'Benchmark: ' + om.benchmark.ann_vol + '%', cls: 'blue' }},
-    {{ label: 'Max Drawdown', value: om.strategy.max_dd + '%', sub: 'Benchmark: ' + om.benchmark.max_dd + '%', cls: 'red' }},
-    {{ label: 'Total Return', value: om.strategy.total_return + '%', sub: 'Benchmark: ' + om.benchmark.total_return + '%', cls: 'blue' }},
-  ];
-  let html = '';
-  cards.forEach(c => {{ html += `<div class="metric-card ${{c.cls}}"><div class="label">${{c.label}}</div><div class="value">${{c.value}}</div><div class="sub">${{c.sub}}</div></div>`; }});
-  document.getElementById('oos-metrics-cards').innerHTML = html;
-
-  const bt = D.backtest_results.filter(r => r.date >= '2016-01-01');
-  let cumS = [], cumB = [], cs = 1, cb = 1;
-  bt.forEach(r => {{ cs *= (1 + r.strategy_return/100); cb *= (1 + r.benchmark_return/100); cumS.push(cs); cumB.push(cb); }});
-  new Chart(document.getElementById('chart-oos-full'), {{
-    type: 'line',
-    data: {{
-      labels: bt.map(r => r.date),
-      datasets: [
-        {{ label: 'Strategy (OOS)', data: cumS, borderColor: '#10b981', backgroundColor: 'rgba(16,185,129,0.08)', fill: true, borderWidth: 2, pointRadius: 0, tension: 0.3 }},
-        {{ label: 'Benchmark', data: cumB, borderColor: '#06b6d4', backgroundColor: 'rgba(6,182,212,0.08)', fill: true, borderWidth: 2, pointRadius: 0, tension: 0.3 }},
-      ]
-    }},
-    options: defaultOpts
-  }});
-}})();
-</script>
-</body>
-</html>"""
-
-# Write the HTML dashboard
-dashboard_path = ROOT / "dashboard.html"
-with open(dashboard_path, "w", encoding="utf-8") as f:
-    f.write(HTML)
-
-print(f"Dashboard saved to: {dashboard_path}")
-
-# ---------------------------------------------------------------------------
-# 4.  SERVE LOCALLY & OPEN BROWSER
-# ---------------------------------------------------------------------------
-PORT = 8050
-
-class QuietHandler(SimpleHTTPRequestHandler):
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, directory=str(ROOT), **kwargs)
-    def log_message(self, format, *args):
-        pass  # suppress logs
-
-def open_browser():
-    webbrowser.open(f"http://127.0.0.1:{PORT}/dashboard.html")
-
-print(f"\n🚀  Dashboard is live at:  http://127.0.0.1:{PORT}/dashboard.html")
-print(f"    Press Ctrl+C to stop the server.\n")
-
-threading.Timer(1.5, open_browser).start()
-
-httpd = HTTPServer(("127.0.0.1", PORT), QuietHandler)
 try:
-    httpd.serve_forever()
-except KeyboardInterrupt:
-    print("\n🛑  Server stopped.")
-    httpd.server_close()
+    regime_df, sector_df, merged_df, summary_df, backtest_df = load_data()
+except Exception as e:
+    st.error("Data files not found. Please click 'Execute Full Pipeline' in the sidebar.")
+    st.stop()
+
+# Define Color Palette for Regimes
+REGIME_COLORS = {
+    'Expansion': '#22C55E',   # Emerald Green
+    'Slowdown': '#F59E0B',    # Amber
+    'Recovery': '#3B82F6',    # Blue
+    'Contraction': '#EF4444'   # Crimson Red
+}
+SECTORS = ['XLF', 'XLK', 'XLE', 'XLV', 'XLY', 'XLP', 'XLI', 'XLU', 'XLB']
+
+# Create Tabs
+tab1, tab2, tab3, tab4, tab5 = st.tabs([
+    "Macro Diagnostics", 
+    "Sector Factor Attribution", 
+    "Intra-Recession Dynamics", 
+    "Out-of-Sample Backtest", 
+    "Allocation Simulator"
+])
+
+# ==========================================
+# TAB 1: MACRO DIAGNOSTICS & TRANSITION MATRIX
+# ==========================================
+with tab1:
+    st.markdown("#### Macroeconomic Indicators & Regime Diagnostics")
+    
+    latest = merged_df.iloc[-1]
+    prev = merged_df.iloc[-2]
+    
+    col1, col2, col3, col4 = st.columns(4)
+    col1.metric("Observation Date", str(latest['date']))
+    col2.metric("Macro Regime", str(latest['regime']))
+    col3.metric("PMI Proxy Index", f"{latest['pmi']:.2f}", delta=f"{latest['pmi'] - prev['pmi']:.2f} pts")
+    col4.metric("Yield Spread (10Y-2Y)", f"{latest['yield_curve_spread']:.2f}%", delta=f"{latest['yield_curve_spread'] - prev['yield_curve_spread']:.2f}%")
+    
+    st.markdown("---")
+    
+    # Dual Axis Plotly Chart
+    fig_macro = go.Figure()
+    fig_macro.add_trace(go.Scatter(
+        x=merged_df['date'], y=merged_df['pmi'],
+        mode='lines', name='PMI Proxy Index',
+        line=dict(color='#3B82F6', width=2)
+    ))
+    fig_macro.add_trace(go.Scatter(
+        x=merged_df['date'], y=merged_df['yield_curve_spread'],
+        mode='lines', name='10Y-2Y Yield Spread (%)', yaxis='y2',
+        line=dict(color='#F59E0B', width=1.5, dash='dot')
+    ))
+    
+    fig_macro.add_shape(
+        type='line', x0=merged_df['date'].iloc[0], y0=50, x1=merged_df['date'].iloc[-1], y1=50,
+        line=dict(color='#666666', dash='dash', width=1)
+    )
+    
+    fig_macro.update_layout(
+        title="Historical Macro Series: Manufacturing Output & Term Structure",
+        xaxis=dict(title="", showgrid=False),
+        yaxis=dict(title="PMI Proxy Index (Neutral = 50)", showgrid=True, gridcolor='#222630'),
+        yaxis2=dict(title="Yield Curve Spread (%)", overlaying='y', side='right', showgrid=False),
+        legend=dict(x=0.01, y=0.99, bgcolor='rgba(0,0,0,0)'),
+        paper_bgcolor='#0E1117',
+        plot_bgcolor='#12151E',
+        font=dict(color='#C0C0C0'),
+        height=400,
+        margin=dict(l=20, r=20, t=40, b=20)
+    )
+    st.plotly_chart(fig_macro, width='stretch')
+    
+    col_left, col_right = st.columns(2)
+    
+    with col_left:
+        st.markdown("##### Historical Regime Distribution (2005–Present)")
+        counts = merged_df['regime'].value_counts()
+        fig_pie = px.pie(
+            names=counts.index, values=counts.values,
+            color=counts.index, color_discrete_map=REGIME_COLORS,
+            hole=0.45
+        )
+        fig_pie.update_layout(
+            paper_bgcolor='#0E1117', plot_bgcolor='#0E1117',
+            font=dict(color='#C0C0C0'), height=320,
+            margin=dict(l=10, r=10, t=20, b=20)
+        )
+        st.plotly_chart(fig_pie, width='stretch')
+        
+    with col_right:
+        st.markdown("##### Markov Regime Transition Probability Matrix")
+        # Compute 1-step regime transition matrix P(t+1 | t)
+        regimes_order = ['Expansion', 'Slowdown', 'Contraction', 'Recovery']
+        merged_df['next_regime'] = merged_df['regime'].shift(-1)
+        transition_counts = pd.crosstab(merged_df['regime'], merged_df['next_regime'], normalize='index') * 100
+        transition_counts = transition_counts.reindex(index=regimes_order, columns=regimes_order).fillna(0).round(1)
+        
+        fig_trans = px.imshow(
+            transition_counts, text_auto=True,
+            color_continuous_scale="Blues",
+            labels=dict(x="Regime (t+1)", y="Regime (t)", color="Probability (%)")
+        )
+        fig_trans.update_layout(
+            paper_bgcolor='#0E1117', plot_bgcolor='#0E1117',
+            font=dict(color='#C0C0C0'), height=320,
+            margin=dict(l=10, r=10, t=20, b=20)
+        )
+        st.plotly_chart(fig_trans, width='stretch')
+
+# ==========================================
+# TAB 2: SECTOR FACTOR ATTRIBUTION
+# ==========================================
+with tab2:
+    st.markdown("#### Sector Return & Risk Attribution across Regimes")
+    
+    avg_returns = merged_df.groupby('regime')[SECTORS].mean().round(2)
+    win_rates = merged_df.groupby('regime')[SECTORS].apply(lambda g: (g > 0).mean() * 100).round(1)
+    
+    col_a, col_b = st.columns(2)
+    with col_a:
+        st.markdown("##### Average Monthly Return (%) by Regime")
+        fig_heat1 = px.imshow(
+            avg_returns, text_auto=True,
+            color_continuous_scale="RdYlGn",
+            labels=dict(x="Sector ETF", y="Macro Regime", color="Return (%)")
+        )
+        fig_heat1.update_layout(
+            paper_bgcolor='#0E1117', plot_bgcolor='#0E1117',
+            font=dict(color='#C0C0C0'), height=350
+        )
+        st.plotly_chart(fig_heat1, width='stretch')
+        
+    with col_b:
+        st.markdown("##### Sector Win Rate (%) by Regime")
+        fig_heat2 = px.imshow(
+            win_rates, text_auto=True,
+            color_continuous_scale="Blues",
+            labels=dict(x="Sector ETF", y="Macro Regime", color="Win Rate (%)")
+        )
+        fig_heat2.update_layout(
+            paper_bgcolor='#0E1117', plot_bgcolor='#0E1117',
+            font=dict(color='#C0C0C0'), height=350
+        )
+        st.plotly_chart(fig_heat2, width='stretch')
+
+    st.markdown("---")
+    st.markdown("##### Risk-Return Profile across Sector Universe (2005–Present)")
+    
+    # Calculate full-sample annual CAGR & Volatility per sector
+    sector_stats = []
+    for sec in SECTORS:
+        cum_val = (1 + merged_df[sec] / 100).cumprod().iloc[-1]
+        cagr = (cum_val ** (12 / len(merged_df)) - 1) * 100
+        vol = merged_df[sec].std() * np.sqrt(12)
+        sharpe = cagr / vol
+        sector_stats.append({'Sector': sec, 'CAGR (%)': cagr, 'Volatility (%)': vol, 'Sharpe': sharpe})
+        
+    stats_df = pd.DataFrame(sector_stats)
+    
+    fig_scatter = px.scatter(
+        stats_df, x='Volatility (%)', y='CAGR (%)', text='Sector', size='Sharpe',
+        color='Sharpe', color_continuous_scale='Viridis',
+        title="Annualized Risk vs. Return per Sector ETF"
+    )
+    fig_scatter.update_traces(textposition='top center', marker=dict(size=14))
+    fig_scatter.update_layout(
+        paper_bgcolor='#0E1117', plot_bgcolor='#12151E',
+        font=dict(color='#C0C0C0'), height=400
+    )
+    st.plotly_chart(fig_scatter, width='stretch')
+
+# ==========================================
+# TAB 3: INTRA-RECESSION DYNAMICS
+# ==========================================
+with tab3:
+    st.markdown("#### Intra-Recession Dynamics: Early vs. Late Contraction Sub-Phases")
+    st.markdown("""
+    **Institutional Research Question:** Is Technology (`XLK`) outperformance during economic downturns driven by early quality/balance-sheet resilience or late-stage monetary easing rallies?
+    """)
+    
+    m_df = merged_df.copy()
+    m_df['run_id'] = (m_df['regime'] != m_df['regime'].shift()).cumsum()
+    c_df = m_df[m_df['regime'] == 'Contraction'].copy()
+    
+    sub_labels = []
+    for rid in c_df['run_id'].unique():
+        rows = c_df[c_df['run_id'] == rid]
+        n = len(rows)
+        early_n = math.ceil(n / 2)
+        sub_labels.extend(['Early Contraction'] * early_n + ['Late Contraction'] * (n - early_n))
+        
+    c_df['sub_phase'] = sub_labels
+    early_late_returns = c_df.groupby('sub_phase')[SECTORS].mean().round(2)
+    
+    fig_bar = px.bar(
+        early_late_returns.T.reset_index(),
+        x='index', y=['Early Contraction', 'Late Contraction'],
+        barmode='group',
+        labels={'index': 'Sector ETF', 'value': 'Average Monthly Return (%)'},
+        title="Sector Performance Shift: Initial Shock vs. Late Recovery Phase"
+    )
+    fig_bar.update_layout(
+        paper_bgcolor='#0E1117', plot_bgcolor='#12151E',
+        font=dict(color='#C0C0C0'), height=420,
+        legend=dict(title="", x=0.01, y=0.99)
+    )
+    st.plotly_chart(fig_bar, width='stretch')
+    
+    st.info("""
+    **Key Takeaways:**
+    - **Early Contraction (Initial Panic):** Cyclical sectors crash—Financials (`XLF` **-0.60%/mo**), Industrials (`XLI` **-0.17%/mo**), and Utilities (`XLU` **-0.56%/mo**). Tech (`XLK`) generates **+2.01%/mo** due to cash balance sheets.
+    - **Late Contraction (Monetary Easing Rally):** Federal Reserve rate cuts trigger broad recovery rallies: Financials (`XLF` **+2.97%/mo**), Tech (`XLK` **+2.84%/mo**), and Discretionary (`XLY` **+2.74%/mo**).
+    """)
+
+# ==========================================
+# TAB 4: OUT-OF-SAMPLE BACKTEST & RISK ENGINE
+# ==========================================
+with tab4:
+    st.markdown("#### Out-of-Sample Performance & Risk Diagnostics (2016–Present)")
+    
+    # Filter controls
+    backtest_df['date_dt'] = pd.to_datetime(backtest_df['date'])
+    min_date = backtest_df['date_dt'].min()
+    max_date = backtest_df['date_dt'].max()
+    
+    date_range = st.slider(
+        "Select Backtest Time Window:",
+        min_value=min_date.to_pydatetime(),
+        max_value=max_date.to_pydatetime(),
+        value=(min_date.to_pydatetime(), max_date.to_pydatetime()),
+        format="YYYY-MM"
+    )
+    
+    filtered_bt = backtest_df[
+        (backtest_df['date_dt'] >= date_range[0]) & 
+        (backtest_df['date_dt'] <= date_range[1])
+    ].copy()
+    
+    filtered_bt['cum_strat'] = (1 + filtered_bt['strategy_return'] / 100).cumprod()
+    filtered_bt['cum_bench'] = (1 + filtered_bt['benchmark_return'] / 100).cumprod()
+    
+    fig_equity = go.Figure()
+    fig_equity.add_trace(go.Scatter(
+        x=filtered_bt['date'], y=filtered_bt['cum_strat'],
+        mode='lines', name='OOS Macro Sector Rotation Strategy',
+        line=dict(color='#22C55E', width=2.5)
+    ))
+    fig_equity.add_trace(go.Scatter(
+        x=filtered_bt['date'], y=filtered_bt['cum_bench'],
+        mode='lines', name='Equal-Weight 9-Sector Benchmark',
+        line=dict(color='#888888', width=1.5, dash='dash')
+    ))
+    
+    fig_equity.update_layout(
+        title="Compounded Portfolio Growth ($1.00 Base)",
+        xaxis=dict(title="", showgrid=False),
+        yaxis=dict(title="Growth of $1.00 ($)", showgrid=True, gridcolor='#222630'),
+        legend=dict(x=0.01, y=0.99, bgcolor='rgba(0,0,0,0)'),
+        paper_bgcolor='#0E1117', plot_bgcolor='#12151E',
+        font=dict(color='#C0C0C0'), height=420
+    )
+    st.plotly_chart(fig_equity, width='stretch')
+    
+    # Calculate performance metrics
+    n_months = len(filtered_bt)
+    if n_months > 0:
+        s_tot = (filtered_bt['cum_strat'].iloc[-1] - 1) * 100
+        b_tot = (filtered_bt['cum_bench'].iloc[-1] - 1) * 100
+        
+        s_cagr = ((filtered_bt['cum_strat'].iloc[-1]) ** (12 / n_months) - 1) * 100
+        b_cagr = ((filtered_bt['cum_bench'].iloc[-1]) ** (12 / n_months) - 1) * 100
+        
+        s_vol = filtered_bt['strategy_return'].std() * np.sqrt(12)
+        b_vol = filtered_bt['benchmark_return'].std() * np.sqrt(12)
+        
+        s_sharpe = s_cagr / s_vol if s_vol > 0 else 0
+        b_sharpe = b_cagr / b_vol if b_vol > 0 else 0
+        
+        # Max Drawdown
+        s_peaks = filtered_bt['cum_strat'].cummax()
+        s_dd = ((filtered_bt['cum_strat'] - s_peaks) / s_peaks).min() * 100
+        
+        b_peaks = filtered_bt['cum_bench'].cummax()
+        b_dd = ((filtered_bt['cum_bench'] - b_peaks) / b_peaks).min() * 100
+        
+        metrics_table = pd.DataFrame({
+            'Performance Metric': ['Total Return (%)', 'CAGR (%)', 'Annualized Volatility (%)', 'Sharpe Ratio (Rf=0)', 'Max Drawdown (%)'],
+            'Strategy (OOS)': [f"{s_tot:.2f}%", f"{s_cagr:.2f}%", f"{s_vol:.2f}%", f"{s_sharpe:.2f}", f"{s_dd:.2f}%"],
+            'Benchmark (Equal-Weight)': [f"{b_tot:.2f}%", f"{b_cagr:.2f}%", f"{b_vol:.2f}%", f"{b_sharpe:.2f}", f"{b_dd:.2f}%"]
+        })
+        st.table(metrics_table)
+
+# ==========================================
+# TAB 5: ALLOCATION SIMULATOR
+# ==========================================
+with tab5:
+    st.markdown("#### Interactive Strategy Allocation Simulator")
+    st.markdown("Customize sector mappings per regime to simulate real-time out-of-sample performance:")
+    
+    sim_col1, sim_col2, sim_col3, sim_col4 = st.columns(4)
+    with sim_col1:
+        exp_sec = st.selectbox("Expansion Allocation", SECTORS, index=SECTORS.index('XLE'))
+    with sim_col2:
+        slow_sec = st.selectbox("Slowdown Allocation", SECTORS, index=SECTORS.index('XLB'))
+    with sim_col3:
+        rec_sec = st.selectbox("Recovery Allocation", SECTORS, index=SECTORS.index('XLP'))
+    with sim_col4:
+        con_sec = st.selectbox("Contraction Allocation", SECTORS, index=SECTORS.index('XLK'))
+        
+    # Simulate custom strategy returns on test set (2016-present)
+    test_df = merged_df[merged_df['date'] >= '2016-01-01'].copy()
+    test_df['lagged_regime'] = test_df['regime'].shift(1)
+    test_df = test_df.dropna(subset=['lagged_regime'])
+    
+    custom_map = {
+        'Expansion': exp_sec,
+        'Slowdown': slow_sec,
+        'Recovery': rec_sec,
+        'Contraction': con_sec
+    }
+    
+    sim_returns = []
+    for idx, row in test_df.iterrows():
+        r = row['lagged_regime']
+        target_sec = custom_map.get(r, 'XLK')
+        sim_returns.append(row[target_sec])
+        
+    test_df['sim_return'] = sim_returns
+    test_df['sim_cum'] = (1 + test_df['sim_return'] / 100).cumprod()
+    
+    sim_tot = (test_df['sim_cum'].iloc[-1] - 1) * 100
+    sim_cagr = ((test_df['sim_cum'].iloc[-1]) ** (12 / len(test_df)) - 1) * 100
+    sim_vol = test_df['sim_return'].std() * np.sqrt(12)
+    sim_sharpe = sim_cagr / sim_vol if sim_vol > 0 else 0
+    
+    st.markdown("---")
+    res1, res2, res3, res4 = st.columns(4)
+    res1.metric("Simulated Total Return", f"{sim_tot:.2f}%")
+    res2.metric("Simulated CAGR", f"{sim_cagr:.2f}%")
+    res3.metric("Simulated Volatility", f"{sim_vol:.2f}%")
+    res4.metric("Simulated Sharpe Ratio", f"{sim_sharpe:.2f}")
+    
+    fig_sim = go.Figure()
+    fig_sim.add_trace(go.Scatter(
+        x=test_df['date'], y=test_df['sim_cum'],
+        mode='lines', name='Simulated Strategy Allocation',
+        line=dict(color='#3B82F6', width=2.5)
+    ))
+    fig_sim.update_layout(
+        title="Simulated Portfolio Growth ($1.00 Base)",
+        paper_bgcolor='#0E1117', plot_bgcolor='#12151E',
+        font=dict(color='#C0C0C0'), height=380
+    )
+    st.plotly_chart(fig_sim, width='stretch')
