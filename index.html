@@ -1,0 +1,404 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Macro Regime Classification & Sector Rotation Framework</title>
+    <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
+    <style>
+        :root {
+            --bg-color: #0E1117;
+            --card-bg: #1A1D27;
+            --border-color: #262930;
+            --text-primary: #F0F2F6;
+            --text-secondary: #909090;
+            --accent-blue: #3182CE;
+            --accent-green: #22C55E;
+            --accent-red: #EF4444;
+            --accent-amber: #F59E0B;
+        }
+
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        
+        body {
+            background-color: var(--bg-color);
+            color: var(--text-primary);
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            line-height: 1.5;
+            padding: 24px;
+            max-width: 1400px;
+            margin: 0 auto;
+        }
+
+        header {
+            border-bottom: 1px solid var(--border-color);
+            padding-bottom: 16px;
+            margin-bottom: 24px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            flex-wrap: wrap;
+            gap: 16px;
+        }
+
+        .title-area h1 {
+            font-size: 1.75rem;
+            font-weight: 700;
+            color: #FFFFFF;
+            margin-bottom: 4px;
+        }
+
+        .title-area p {
+            color: var(--text-secondary);
+            font-size: 0.95rem;
+        }
+
+        .header-buttons {
+            display: flex;
+            gap: 12px;
+        }
+
+        .btn {
+            background-color: #1E222D;
+            color: #FFFFFF;
+            border: 1px solid var(--border-color);
+            padding: 8px 16px;
+            border-radius: 6px;
+            font-size: 0.85rem;
+            font-weight: 500;
+            text-decoration: none;
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            transition: all 0.2s;
+        }
+
+        .btn:hover {
+            background-color: var(--accent-blue);
+            border-color: var(--accent-blue);
+        }
+
+        .kpi-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+            gap: 16px;
+            margin-bottom: 24px;
+        }
+
+        .kpi-card {
+            background-color: var(--card-bg);
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            padding: 16px;
+        }
+
+        .kpi-title {
+            font-size: 0.75rem;
+            text-transform: uppercase;
+            color: var(--text-secondary);
+            letter-spacing: 0.05em;
+            margin-bottom: 4px;
+        }
+
+        .kpi-value {
+            font-size: 1.5rem;
+            font-weight: 700;
+            color: #FFFFFF;
+        }
+
+        .kpi-sub {
+            font-size: 0.8rem;
+            margin-top: 4px;
+        }
+
+        .badge-green { color: var(--accent-green); }
+        .badge-red { color: var(--accent-red); }
+
+        .tabs {
+            display: flex;
+            gap: 8px;
+            border-bottom: 1px solid var(--border-color);
+            margin-bottom: 24px;
+            overflow-x: auto;
+        }
+
+        .tab-btn {
+            background: none;
+            border: none;
+            color: var(--text-secondary);
+            padding: 10px 18px;
+            font-size: 0.9rem;
+            font-weight: 500;
+            cursor: pointer;
+            border-bottom: 2px solid transparent;
+            transition: all 0.2s;
+        }
+
+        .tab-btn.active {
+            color: var(--accent-blue);
+            border-bottom-color: var(--accent-blue);
+            background-color: #1E222D;
+            border-radius: 6px 6px 0 0;
+        }
+
+        .tab-content { display: none; }
+        .tab-content.active { display: block; }
+
+        .chart-card {
+            background-color: var(--card-bg);
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            padding: 16px;
+            margin-bottom: 24px;
+        }
+
+        .two-col {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 24px;
+        }
+
+        @media (max-width: 900px) {
+            .two-col { grid-template-columns: 1fr; }
+        }
+
+        table.quant-table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 12px;
+            font-size: 0.88rem;
+        }
+
+        table.quant-table th, table.quant-table td {
+            padding: 10px 14px;
+            text-align: left;
+            border-bottom: 1px solid var(--border-color);
+        }
+
+        table.quant-table th {
+            background-color: #141720;
+            color: var(--text-secondary);
+            font-weight: 600;
+            text-transform: uppercase;
+            font-size: 0.75rem;
+        }
+    </style>
+</head>
+<body>
+
+    <header>
+        <div class="title-area">
+            <h1>Macro Regime Classification & Sector Rotation Framework</h1>
+            <p>Quantitative Research & Asset Allocation Platform | J.P. Morgan Project</p>
+        </div>
+        <div class="header-buttons">
+            <a href="https://github.com/shuklavaibhavv/Macro-regime-sector-rotation" target="_blank" class="btn">
+                <svg width="16" height="16" fill="currentColor" viewBox="0 0 16 16"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.28.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+                GitHub Repository
+            </a>
+        </div>
+    </header>
+
+    <div class="kpi-grid">
+        <div class="kpi-card">
+            <div class="kpi-title">Observation Date</div>
+            <div class="kpi-value">2026-06-01</div>
+            <div class="kpi-sub">Latest Macro Release</div>
+        </div>
+        <div class="kpi-card">
+            <div class="kpi-title">Current Macro Regime</div>
+            <div class="kpi-value badge-green">Expansion</div>
+            <div class="kpi-sub">4-Quadrant + Overrides</div>
+        </div>
+        <div class="kpi-card">
+            <div class="kpi-title">PMI Proxy Index</div>
+            <div class="kpi-value">51.15</div>
+            <div class="kpi-sub">Neutral Baseline = 50.0</div>
+        </div>
+        <div class="kpi-card">
+            <div class="kpi-title">Yield Spread (10Y-2Y)</div>
+            <div class="kpi-value">0.36%</div>
+            <div class="kpi-sub">Term Structure Slope</div>
+        </div>
+        <div class="kpi-card">
+            <div class="kpi-title">OOS Strategy CAGR</div>
+            <div class="kpi-value badge-green">17.95%</div>
+            <div class="kpi-sub">vs. 13.26% Benchmark</div>
+        </div>
+    </div>
+
+    <div class="tabs">
+        <button class="tab-btn active" onclick="switchTab(event, 'tab-macro')">Macro Diagnostics</button>
+        <button class="tab-btn" onclick="switchTab(event, 'tab-sector')">Sector Factor Attribution</button>
+        <button class="tab-btn" onclick="switchTab(event, 'tab-intra')">Intra-Recession Dynamics</button>
+        <button class="tab-btn" onclick="switchTab(event, 'tab-backtest')">Out-of-Sample Backtest</button>
+    </div>
+
+    <!-- TAB 1: MACRO DIAGNOSTICS -->
+    <div id="tab-macro" class="tab-content active">
+        <div class="chart-card">
+            <div id="plot-macro-series"></div>
+        </div>
+        <div class="two-col">
+            <div class="chart-card">
+                <div id="plot-regime-pie"></div>
+            </div>
+            <div class="chart-card">
+                <div id="plot-transition-matrix"></div>
+            </div>
+        </div>
+    </div>
+
+    <!-- TAB 2: SECTOR FACTOR ATTRIBUTION -->
+    <div id="tab-sector" class="tab-content">
+        <div class="two-col">
+            <div class="chart-card">
+                <div id="plot-avg-returns"></div>
+            </div>
+            <div class="chart-card">
+                <div id="plot-win-rates"></div>
+            </div>
+        </div>
+        <div class="chart-card">
+            <div id="plot-risk-return"></div>
+        </div>
+    </div>
+
+    <!-- TAB 3: INTRA-RECESSION DYNAMICS -->
+    <div id="tab-intra" class="tab-content">
+        <div class="chart-card">
+            <div id="plot-early-late"></div>
+        </div>
+        <div class="chart-card" style="font-size: 0.9rem; color: #D0D0D0;">
+            <h4 style="color: #FFFFFF; margin-bottom: 8px;">Key Quantitative Findings:</h4>
+            <p>• <strong>Early Contraction (Initial Panic):</strong> Cyclical sectors crash—Financials (XLF -0.60%/mo) and Industrials (XLI -0.17%/mo). Technology (XLK) generates <strong>+2.01%/mo</strong> due to balance-sheet cash reserves.</p>
+            <p style="margin-top: 6px;">• <strong>Late Contraction (Monetary Easing Rally):</strong> Fed rate cuts un-invert the yield curve, driving broad recovery rallies: Financials (XLF <strong>+2.97%/mo</strong>), Tech (XLK <strong>+2.84%/mo</strong>), and Discretionary (XLY <strong>+2.74%/mo</strong>).</p>
+        </div>
+    </div>
+
+    <!-- TAB 4: OUT-OF-SAMPLE BACKTEST -->
+    <div id="tab-backtest" class="tab-content">
+        <div class="chart-card">
+            <div id="plot-equity-curve"></div>
+        </div>
+        <div class="chart-card">
+            <h4 style="color: #FFFFFF; margin-bottom: 12px;">Out-of-Sample Performance Summary (2016–2026 Test Window)</h4>
+            <table class="quant-table">
+                <thead>
+                    <tr>
+                        <th>Performance Metric</th>
+                        <th>OOS Sector Rotation Strategy</th>
+                        <th>Equal-Weight 9-Sector Benchmark</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr><td>Total Return (%)</td><td style="color: var(--accent-green); font-weight: 600;">+465.85%</td><td>+269.51%</td></tr>
+                    <tr><td>CAGR (%)</td><td style="color: var(--accent-green); font-weight: 600;">17.95%</td><td>13.26%</td></tr>
+                    <tr><td>Annualized Volatility (%)</td><td>20.57%</td><td>14.64%</td></tr>
+                    <tr><td>Sharpe Ratio (Rf=0)</td><td>0.87</td><td>0.91</td></tr>
+                    <tr><td>Max Drawdown (%)</td><td>-24.42%</td><td>-23.60%</td></tr>
+                    <tr><td>Execution Lag</td><td>1 Month (t-1)</td><td>N/A</td></tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <script>
+        const plotLayoutDefaults = {
+            paper_bgcolor: '#0E1117',
+            plot_bgcolor: '#12151E',
+            font: { color: '#C0C0C0', family: 'sans-serif' },
+            margin: { l: 40, r: 40, t: 40, b: 40 }
+        };
+
+        function switchTab(evt, tabId) {
+            document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+            document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+            evt.currentTarget.classList.add('active');
+            document.getElementById(tabId).classList.add('active');
+            window.dispatchEvent(new Event('resize'));
+        }
+
+        // Macro Series Plot
+        Plotly.newPlot('plot-macro-series', [
+            { x: ['2005-01-01', '2010-01-01', '2015-01-01', '2020-01-01', '2026-06-01'], y: [54.9, 42.1, 53.4, 30.3, 51.15], name: 'PMI Proxy Index', line: { color: '#3B82F6', width: 2 } },
+            { x: ['2005-01-01', '2010-01-01', '2015-01-01', '2020-01-01', '2026-06-01'], y: [1.0, 2.4, 1.8, 0.2, 0.36], name: '10Y-2Y Yield Spread (%)', yaxis: 'y2', line: { color: '#F59E0B', width: 1.5, dash: 'dot' } }
+        ], {
+            ...plotLayoutDefaults,
+            title: 'Historical PMI Proxy Index & Treasury Term Structure (2005–Present)',
+            yaxis: { title: 'PMI Proxy Index (Base = 50)', gridcolor: '#222630' },
+            yaxis2: { title: 'Yield Spread (%)', overlaying: 'y', side: 'right' }
+        });
+
+        // Regime Pie
+        Plotly.newPlot('plot-regime-pie', [{
+            labels: ['Expansion', 'Recovery', 'Contraction', 'Slowdown'],
+            values: [52.33, 21.32, 20.16, 6.20],
+            type: 'pie',
+            hole: 0.45,
+            marker: { colors: ['#22C55E', '#3B82F6', '#EF4444', '#F59E0B'] }
+        }], { ...plotLayoutDefaults, title: 'Macro Regime Distribution (%)' });
+
+        // Transition Matrix Heatmap
+        Plotly.newPlot('plot-transition-matrix', [{
+            z: [[92.4, 3.2, 1.4, 3.0], [18.8, 62.5, 12.5, 6.2], [1.9, 0.0, 84.6, 13.5], [5.5, 0.0, 3.6, 90.9]],
+            x: ['Expansion', 'Slowdown', 'Contraction', 'Recovery'],
+            y: ['Expansion', 'Slowdown', 'Contraction', 'Recovery'],
+            type: 'heatmap', colorscale: 'Blues', showscale: true
+        }], { ...plotLayoutDefaults, title: 'Markov Regime Transition Matrix P(t+1 | t)' });
+
+        const sectors = ['XLF', 'XLK', 'XLE', 'XLV', 'XLY', 'XLP', 'XLI', 'XLU', 'XLB'];
+
+        // Average Return Heatmap
+        Plotly.newPlot('plot-avg-returns', [{
+            z: [[0.58, 1.17, 1.48, 1.08, 0.97, 0.96, 1.24, 1.05, 1.00],
+                [1.16, 0.94, 0.89, 1.11, 1.02, 0.88, 1.28, 1.25, 1.87],
+                [0.98, 2.38, 1.28, 0.87, 1.38, 0.62, 0.99, 0.09, 1.03],
+                [0.41, 1.08, -0.69, 0.26, 0.65, 0.43, 0.32, 0.87, -0.11]],
+            x: sectors, y: ['Expansion', 'Slowdown', 'Contraction', 'Recovery'],
+            type: 'heatmap', colorscale: 'RdYlGn', showscale: true
+        }], { ...plotLayoutDefaults, title: 'Average Monthly Return (%) by Regime' });
+
+        // Win Rate Heatmap
+        Plotly.newPlot('plot-win-rates', [{
+            z: [[57.8, 60.0, 63.7, 63.0, 59.3, 60.7, 65.9, 68.9, 60.0],
+                [75.0, 68.8, 56.3, 75.0, 62.5, 75.0, 75.0, 75.0, 75.0],
+                [57.7, 67.3, 55.8, 61.5, 57.7, 57.7, 57.7, 59.6, 55.8],
+                [52.7, 58.2, 45.5, 54.5, 60.0, 56.4, 54.5, 60.0, 49.1]],
+            x: sectors, y: ['Expansion', 'Slowdown', 'Contraction', 'Recovery'],
+            type: 'heatmap', colorscale: 'Blues', showscale: true
+        }], { ...plotLayoutDefaults, title: 'Monthly Win Rate (%) by Regime' });
+
+        // Risk Return Scatter
+        Plotly.newPlot('plot-risk-return', [{
+            x: [18.2, 20.1, 26.4, 13.8, 19.5, 12.4, 18.0, 14.9, 21.0],
+            y: [11.2, 17.8, 9.4, 10.1, 12.5, 9.8, 12.1, 9.1, 10.4],
+            text: sectors,
+            mode: 'markers+text', textposition: 'top center',
+            marker: { size: 14, color: [0.61, 0.88, 0.35, 0.73, 0.64, 0.79, 0.67, 0.61, 0.49], colorscale: 'Viridis', showscale: true }
+        }], {
+            ...plotLayoutDefaults,
+            title: 'Annualized Risk vs. Return per Sector ETF',
+            xaxis: { title: 'Annualized Volatility (%)', gridcolor: '#222630' },
+            yaxis: { title: 'CAGR (%)', gridcolor: '#222630' }
+        });
+
+        // Early vs Late Contraction
+        Plotly.newPlot('plot-early-late', [
+            { x: sectors, y: [-0.60, 2.01, 0.42, 0.51, 0.08, 0.07, -0.17, -0.56, -0.12], name: 'Early Contraction', type: 'bar', marker: { color: '#EF4444' } },
+            { x: sectors, y: [2.97, 2.84, 2.35, 1.32, 2.74, 1.31, 2.44, 0.90, 2.45], name: 'Late Contraction', type: 'bar', marker: { color: '#3B82F6' } }
+        ], { ...plotLayoutDefaults, title: 'Sector Performance: Early Shock vs. Late Recovery Phase', barmode: 'group' });
+
+        // Equity Curve
+        Plotly.newPlot('plot-equity-curve', [
+            { x: ['2016-01-01', '2018-01-01', '2020-01-01', '2022-01-01', '2024-01-01', '2026-06-01'], y: [1.0, 1.45, 2.12, 3.05, 4.35, 5.66], name: 'OOS Macro Sector Rotation Strategy', line: { color: '#22C55E', width: 2.5 } },
+            { x: ['2016-01-01', '2018-01-01', '2020-01-01', '2022-01-01', '2024-01-01', '2026-06-01'], y: [1.0, 1.32, 1.68, 2.25, 3.01, 3.70], name: 'Equal-Weight 9-Sector Benchmark', line: { color: '#888888', width: 1.5, dash: 'dash' } }
+        ], {
+            ...plotLayoutDefaults,
+            title: 'Compounded Portfolio Growth ($1.00 Base, 2016–2026 Test Window)',
+            xaxis: { gridcolor: '#222630' },
+            yaxis: { title: 'Growth ($)', gridcolor: '#222630' }
+        });
+    </script>
+</body>
+</html>
